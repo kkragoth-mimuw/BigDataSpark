@@ -1,0 +1,1 @@
+pdd/spark-2.4.5-bin-hadoop2.7/bin/spark-submit --class com.pszulc.Pdd --master yarn --deploy-mode cluster  dev/pdd_standalone/target/scala-2.11/pdd2_2.11-0.1.jar hdfs://kkragoth15:9000/root/test3d.csv
