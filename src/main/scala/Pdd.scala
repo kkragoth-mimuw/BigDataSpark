@@ -103,7 +103,7 @@ object Pdd {
             .collect()
 
         for (elem <- queryCounts)
-            print(elem)
+            println(elem)
     }
 
     def run3d(sc : org.apache.spark.SparkContext, path : String) {
@@ -249,7 +249,7 @@ object Pdd {
             .collect()
 
             for (elem <- queryCounts)
-                print(elem)
+                println(elem)
     }
 
     def main(args: Array[String]) {

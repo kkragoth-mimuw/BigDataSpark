@@ -1,3 +1,4 @@
 .bloop
 .ipynb_checkpoints
 .metals
+.DS_Store
