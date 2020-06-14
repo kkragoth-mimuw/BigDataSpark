@@ -1,0 +1,187 @@
+﻿{
+  "paragraphs": [
+    {
+      "text": "import scala.util.Random\n\nval POINT_TYPE = 0\nval QUERY_TYPE = 1\n\nval SERVER_COUNT = 3\n\nval example_points = Random.shuffle(List(\n    ((1,5), POINT_TYPE),\n    ((3,8), QUERY_TYPE),\n    ((4,2), POINT_TYPE),\n    ((5,9), QUERY_TYPE),\n    ((6,7), POINT_TYPE),\n    ((7,3), QUERY_TYPE),\n    ((8,1), POINT_TYPE),\n    ((9,4), QUERY_TYPE)\n))\n\nval rdd = spark.sparkContext.parallelize(example_points, SERVER_COUNT).cache\n\nval rddCount = spark.sparkContext.broadcast(rdd.count())\n\n\nval sorted1d = rdd.sortBy { case ((dim1, dim2), pointType) =>\n        (dim1, pointType)\n    }\n    .zipWithIndex\n    .map { case (((dim1, dim2), pointType), i) => {\n        val padWithZerosLength = (rddCount.value - 1).toBinaryString.length - i.toBinaryString.length\n        val generatedLabel = \"0\" * (padWithZerosLength) + i.toBinaryString\n        \n        (generatedLabel, (dim1, dim2), pointType)\n    }}\n    .flatMap { case (label, (dim1, dim2), pointType) => {\n        val desiredPrefixEnding = pointType match {\n            case POINT_TYPE => '0'\n            case QUERY_TYPE => '1'\n        }\n        \n        val indxs = label.zipWithIndex.filter(_._1 == desiredPrefixEnding).map(_._2)\n        \n        var createdPrefixes = indxs.map(i => (label.take(i), ((dim1, dim2), pointType)))\n        \n        if (pointType == QUERY_TYPE && label == (\"0\" * (rddCount.value - 1).toBinaryString.length)) {\n            createdPrefixes = createdPrefixes :+ ((\"0\" * (rddCount.value - 1).toBinaryString.length), ((dim1, dim2), pointType))\n        }\n        \n        createdPrefixes\n        // indxs.map(i => (label.take(i), ((dim1, dim2), pointType)))\n    }}\n    .sortBy(r => (r._1.length, r._1, r._2._1._2, r._2._2))\n    .cache()\n\nval lastValues = sorted1d\n    .mapPartitionsWithIndex((index, it) => {\n        val (iter, iterDup) = it.duplicate\n        \n        var lastPrefix = iterDup.toList.last._1\n        var lastCount = iter.filter(p => p._1 == lastPrefix && p._2._2 == POINT_TYPE).length\n        \n        Iterator((index, lastPrefix, lastCount))\n    \n    }).collect()\n    \n\nval broadcastLastValues = spark.sparkContext.broadcast(lastValues)\n\nval queryCounts = sorted1d\n    .mapPartitionsWithIndex((index, it) => {\n        var queryOutputs = Array[((Int, Int), Int)]()\n        \n        val firstElem = it.next()\n        val firstElemLabel = firstElem._1\n        \n        val previousServerInfo = broadcastLastValues.value.filter(r => r._1 < index && r._2 == firstElemLabel)\n        \n        val firstElemCountFromPreviousServer = previousServerInfo.length match { \n            case 0 => 0\n            case _ => previousServerInfo.map(_._3).reduceLeft[Int](_+_)\n        }\n        \n        var currentLabel = firstElemLabel\n        \n        var currentCount = firstElem._2._2 match {\n            case POINT_TYPE => firstElemCountFromPreviousServer + 1\n            case QUERY_TYPE => firstElemCountFromPreviousServer\n        }\n        \n        if (firstElem._2._2 == QUERY_TYPE) {\n            queryOutputs = queryOutputs :+ (firstElem._2._1, firstElemCountFromPreviousServer)\n        }\n        \n        \n        for ((label, ((dim1, dim2), pointType)) <- it) {\n            if (label != currentLabel) {\n                currentLabel = label\n                currentCount = 0\n            }\n            pointType match {\n                case POINT_TYPE => currentCount += 1\n                case QUERY_TYPE => {\n                    queryOutputs = queryOutputs :+ ((dim1, dim2), currentCount)\n                }\n            }\n        }\n        \n        queryOutputs.toIterator\n    })\n    .reduceByKey(_+_)\n    .collect()\n",
+      "user": "anonymous",
+      "dateUpdated": "2020-06-14T11:50:24+0200",
+      "config": {
+        "colWidth": 12,
+        "fontSize": 9,
+        "enabled": true,
+        "results": {
+          "0": {
+            "graph": {
+              "mode": "table",
+              "height": 279,
+              "optionOpen": false
+            }
+          }
+        },
+        "editorSetting": {
+          "language": "scala",
+          "editOnDblClick": false,
+          "completionKey": "TAB",
+          "completionSupport": true
+        },
+        "editorMode": "ace/mode/scala"
+      },
+      "settings": {
+        "params": {},
+        "forms": {}
+      },
+      "results": {
+        "code": "SUCCESS",
+        "msg": [
+          {
+            "type": "TEXT",
+            "data": "import scala.util.Random\n\u001b[1m\u001b[34mPOINT_TYPE\u001b[0m: \u001b[1m\u001b[32mInt\u001b[0m = 0\n\u001b[1m\u001b[34mQUERY_TYPE\u001b[0m: \u001b[1m\u001b[32mInt\u001b[0m = 1\n\u001b[1m\u001b[34mSERVER_COUNT\u001b[0m: \u001b[1m\u001b[32mInt\u001b[0m = 3\n\u001b[1m\u001b[34mexample_points\u001b[0m: \u001b[1m\u001b[32mList[((Int, Int), Int)]\u001b[0m = List(((9,4),1), ((8,1),0), ((7,3),1), ((5,9),1), ((3,8),1), ((6,7),0), ((1,5),0), ((4,2),0))\n\u001b[1m\u001b[34mrdd\u001b[0m: \u001b[1m\u001b[32morg.apache.spark.rdd.RDD[((Int, Int), Int)]\u001b[0m = ParallelCollectionRDD[1517] at parallelize at <console>:72\n\u001b[1m\u001b[34mrddCount\u001b[0m: \u001b[1m\u001b[32morg.apache.spark.broadcast.Broadcast[Long]\u001b[0m = Broadcast(897)\n\u001b[1m\u001b[34msorted1d\u001b[0m: \u001b[1m\u001b[32morg.apache.spark.rdd.RDD[(String, ((Int, Int), Int))]\u001b[0m = MapPartitionsRDD[1530] at sortBy at <console>:104\n\u001b[1m\u001b[34mlastValues\u001b[0m: \u001b[1m\u001b[32mArray[(Int, String, Int)]\u001b[0m = Array((0,0,1), (1,01,1), (2,11,..."
+          }
+        ]
+      },
+      "apps": [],
+      "runtimeInfos": {
+        "jobUrl": {
+          "propertyName": "jobUrl",
+          "label": "SPARK JOB",
+          "tooltip": "View in Spark web UI",
+          "group": "spark",
+          "values": [
+            {
+              "jobUrl": "http://pc23.home:4040/jobs/job?id=567",
+              "$$hashKey": "object:13251"
+            },
+            {
+              "jobUrl": "http://pc23.home:4040/jobs/job?id=568",
+              "$$hashKey": "object:13252"
+            },
+            {
+              "jobUrl": "http://pc23.home:4040/jobs/job?id=569",
+              "$$hashKey": "object:13253"
+            },
+            {
+              "jobUrl": "http://pc23.home:4040/jobs/job?id=570",
+              "$$hashKey": "object:13254"
+            },
+            {
+              "jobUrl": "http://pc23.home:4040/jobs/job?id=571",
+              "$$hashKey": "object:13255"
+            },
+            {
+              "jobUrl": "http://pc23.home:4040/jobs/job?id=572",
+              "$$hashKey": "object:13256"
+            }
+          ],
+          "interpreterSettingId": "spark"
+        }
+      },
+      "progressUpdateIntervalMs": 500,
+      "jobName": "paragraph_1591879302805_969135482",
+      "id": "paragraph_1591879302805_969135482",
+      "dateCreated": "2020-06-11T14:41:42+0200",
+      "dateStarted": "2020-06-14T11:50:24+0200",
+      "dateFinished": "2020-06-14T11:50:25+0200",
+      "status": "FINISHED",
+      "focus": true,
+      "$$hashKey": "object:13146"
+    },
+    {
+      "text": "val queryCounts = sorted1d\n    .mapPartitionsWithIndex((index, it) => {\n        var queryOutputs = Array[((Int, Int), Int)]()\n        \n        val firstElem = it.next()\n        val firstElemLabel = firstElem._1\n        \n        val previousServerInfo = broadcastLastValues.value.filter(r => r._1 < index && r._2 == firstElemLabel)\n        \n        val firstElemCountFromPreviousServer = previousServerInfo.length match { \n            case 0 => 0\n            case _ => previousServerInfo.map(_._3).reduceLeft[Int](_+_)\n        }\n        \n        var currentLabel = firstElemLabel\n        \n        var currentCount = firstElem._2._2 match {\n            case POINT_TYPE => firstElemCountFromPreviousServer + 1\n            case QUERY_TYPE => 0\n        }\n        \n        if (firstElem._2._2 == QUERY_TYPE) {\n            queryOutputs = queryOutputs :+ (firstElem._2._1, firstElemCountFromPreviousServer)\n        }\n        \n        \n        for ((label, ((dim1, dim2), pointType)) <- it) {\n            if (label != currentLabel) {\n                currentLabel = label\n                currentCount = 0\n            }\n            pointType match {\n                case POINT_TYPE => currentCount += 1\n                case QUERY_TYPE => {\n                    queryOutputs = queryOutputs :+ ((dim1, dim2), currentCount)\n                }\n            }\n        }\n        \n        queryOutputs.toIterator\n    })\n    .reduceByKey((a, b) => a + b)\n    .collect()",
+      "user": "anonymous",
+      "dateUpdated": "2020-06-11T20:33:21+0200",
+      "config": {
+        "colWidth": 12,
+        "fontSize": 9,
+        "enabled": true,
+        "results": {},
+        "editorSetting": {
+          "language": "scala",
+          "editOnDblClick": false,
+          "completionKey": "TAB",
+          "completionSupport": true
+        },
+        "editorMode": "ace/mode/scala"
+      },
+      "settings": {
+        "params": {},
+        "forms": {}
+      },
+      "results": {
+        "code": "SUCCESS",
+        "msg": [
+          {
+            "type": "TEXT",
+            "data": "\u001b[1m\u001b[34mqueryCounts\u001b[0m: \u001b[1m\u001b[32mArray[((Int, Int), Int)]\u001b[0m = Array(((7,3),1), ((5,9),2), ((9,4),2), ((3,8),1))\n"
+          }
+        ]
+      },
+      "apps": [],
+      "runtimeInfos": {
+        "jobUrl": {
+          "propertyName": "jobUrl",
+          "label": "SPARK JOB",
+          "tooltip": "View in Spark web UI",
+          "group": "spark",
+          "values": [
+            {
+              "jobUrl": "http://pc23.home:4040/jobs/job?id=473",
+              "$$hashKey": "object:13334"
+            }
+          ],
+          "interpreterSettingId": "spark"
+        }
+      },
+      "progressUpdateIntervalMs": 500,
+      "jobName": "paragraph_1591879305259_1325860632",
+      "id": "paragraph_1591879305259_1325860632",
+      "dateCreated": "2020-06-11T14:41:45+0200",
+      "dateStarted": "2020-06-11T20:33:21+0200",
+      "dateFinished": "2020-06-11T20:33:22+0200",
+      "status": "FINISHED",
+      "$$hashKey": "object:13147"
+    },
+    {
+      "text": "",
+      "user": "anonymous",
+      "dateUpdated": "2020-06-11T17:15:26+0200",
+      "config": {
+        "colWidth": 12,
+        "fontSize": 9,
+        "enabled": true,
+        "results": {},
+        "editorSetting": {
+          "language": "scala",
+          "editOnDblClick": false,
+          "completionKey": "TAB",
+          "completionSupport": true
+        },
+        "editorMode": "ace/mode/scala"
+      },
+      "settings": {
+        "params": {},
+        "forms": {}
+      },
+      "apps": [],
+      "runtimeInfos": {},
+      "progressUpdateIntervalMs": 500,
+      "jobName": "paragraph_1591879415708_371910462",
+      "id": "paragraph_1591879415708_371910462",
+      "dateCreated": "2020-06-11T14:43:35+0200",
+      "status": "READY",
+      "$$hashKey": "object:13148"
+    }
+  ],
+  "name": "pdd2_2d",
+  "id": "2FD9P23FS",
+  "defaultInterpreterGroup": "spark",
+  "version": "0.9.0-preview1",
+  "noteParams": {},
+  "noteForms": {},
+  "angularObjects": {},
+  "config": {
+    "isZeppelinNotebookCronEnable": false,
+    "looknfeel": "default",
+    "personalizedMode": "false"
+  },
+  "info": {},
+  "path": "/pdd2_2d"
+}
