@@ -9,8 +9,8 @@ object Pdd {
     val POINT_TYPE = 0
     val QUERY_TYPE = 1
 
-    def run2d(sc : org.apache.spark.SparkContext, path : String) {
-        val rdd = sc.textFile(path)
+    def run2d(sc : org.apache.spark.SparkContext, path : String, parallelizeCount : Int) {
+        val rdd = sc.textFile(path, parallelizeCount)
             .map(r => r.split(","))
             .map(r => ((r(0).toInt, r(1).toInt), r(2).toInt))
 
@@ -120,8 +120,8 @@ object Pdd {
             println(elem)
     }
 
-    def run3d(sc : org.apache.spark.SparkContext, path : String) {
-        val rdd = sc.textFile(path)
+    def run3d(sc : org.apache.spark.SparkContext, path : String, parallelizeCount : Int) {
+        val rdd = sc.textFile(path, parallelizeCount)
             .map(r => r.split(","))
             .map(r => ((r(0).toInt, r(1).toInt, r(2).toInt), r(3).toInt))
 
@@ -297,10 +297,10 @@ object Pdd {
         val rowSize = sc.textFile(path).first().split(",").length
 
         if (rowSize == 3) {
-            run2d(sc, path)
+            run2d(sc, path, parallelizeCount)
         }
         else if (rowSize == 4) {
-            run3d(sc, path)
+            run3d(sc, path, parallelizeCount)
         }
         else {
             println("unsupported file type")
