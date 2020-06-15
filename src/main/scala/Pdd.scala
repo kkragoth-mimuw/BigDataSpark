@@ -36,8 +36,9 @@ object Pdd {
                 
                 var createdPrefixes = indxs.map(i => (label.take(i), ((dim1, dim2), pointType)))
                 
-                if (pointType == QUERY_TYPE && label == ("0" * (rddCount.value - 1).toBinaryString.length)) {
-                    createdPrefixes = createdPrefixes :+ (("0" * (rddCount.value - 1).toBinaryString.length), ((dim1, dim2), pointType))
+                val zeroLabel = "0" * (rddCount.value - 1).toBinaryString.length
+                if (pointType == QUERY_TYPE && label == zeroLabel) {
+                    createdPrefixes = createdPrefixes :+ (zeroLabel, ((dim1, dim2), pointType))
                 }
                 
                 createdPrefixes
@@ -47,18 +48,30 @@ object Pdd {
             }
             .cache()
 
-        val lastValues = sorted1d
+        val lastLabelInfoFromServer = sorted1d
             .mapPartitionsWithIndex((index, it) => {
                 val (iter, iterDup) = it.duplicate
                 
-                var lastPrefix = iterDup.toList.last._1
-                var lastCount = iter.filter(p => p._1 == lastPrefix && p._2._2 == POINT_TYPE).length
+                var currentLabel = "not_defined"
+                var currentLabelCount = 0
                 
-                Iterator((index, lastPrefix, lastCount))
+                for ((label, (dims, pointType)) <- iterDup) {
+                    if (label != currentLabel) {
+                        currentLabel = label
+                        currentLabelCount = 0
+                    }
+                    
+                    if (pointType == POINT_TYPE) {
+                        currentLabelCount += 1
+                    }
+                }
+                
+                Iterator((index, currentLabel, currentLabelCount))
             
             }).collect()
+            
 
-        val broadcastLastValues = sc.broadcast(lastValues)
+        val broadcastLastLabelInfoFromServer = sc.broadcast(lastLabelInfoFromServer)
 
         val queryCounts = sorted1d
             .mapPartitionsWithIndex((index, it) => {
@@ -67,7 +80,9 @@ object Pdd {
                 val firstElem = it.next()
                 val firstElemLabel = firstElem._1
                 
-                val previousServerInfo = broadcastLastValues.value.filter(r => r._1 < index && r._2 == firstElemLabel)
+                val previousServerInfo = broadcastLastLabelInfoFromServer
+                    .value
+                    .filter(r => r._1 < index && r._2 == firstElemLabel)
                 
                 val firstElemCountFromPreviousServer = previousServerInfo.length match { 
                     case 0 => 0
@@ -133,8 +148,9 @@ object Pdd {
                 val indxs = label.zipWithIndex.filter(_._1 == desiredPrefixEnding).map(_._2)
                 var createdPrefixes = indxs.map(i => (label.take(i), ((dim1, dim2, dim3), pointType)))
                 
-                if (pointType == QUERY_TYPE && label == ("0" * (rddCount.value - 1).toBinaryString.length)) {
-                    createdPrefixes = createdPrefixes :+ (("0" * (rddCount.value - 1).toBinaryString.length), ((dim1, dim2, dim3), pointType))
+                val zeroLabel = "0" * (rddCount.value - 1).toBinaryString.length
+                if (pointType == QUERY_TYPE && label == zeroLabel) {
+                    createdPrefixes = createdPrefixes :+ (zeroLabel, ((dim1, dim2, dim3), pointType))
                 }
                 
                 createdPrefixes
@@ -191,19 +207,30 @@ object Pdd {
             }
             .cache()
 
-        val lastValues = sorted1d
+        val lastLabelInfoFromServer = sorted1d
             .mapPartitionsWithIndex((index, it) => {
                 val (iter, iterDup) = it.duplicate
                 
-                var lastPrefix = iterDup.toList.last._1
-                var lastCount = iter.filter(p => p._1 == lastPrefix && p._2._2 == POINT_TYPE).length
+                var currentLabel = ("not_defined", "not_defined")
+                var currentLabelCount = 0
                 
-                Iterator((index, lastPrefix, lastCount))
+                for ((label, (dims, pointType)) <- iterDup) {
+                    if (label != currentLabel) {
+                        currentLabel = label
+                        currentLabelCount = 0
+                    }
+                    
+                    if (pointType == POINT_TYPE) {
+                        currentLabelCount += 1
+                    }
+                }
+                
+                Iterator((index, currentLabel, currentLabelCount))
             
             }).collect()
             
 
-        val broadcastLastValues = sc.broadcast(lastValues)
+        val broadcastLastLabelInfoFromServer = sc.broadcast(lastLabelInfoFromServer)
 
         val queryCounts = sorted1d
             .mapPartitionsWithIndex((index, it) => {
@@ -212,7 +239,9 @@ object Pdd {
                 val firstElem = it.next()
                 val firstElemLabel = firstElem._1
                 
-                val previousServerInfo = broadcastLastValues.value.filter(r => r._1 < index && r._2 == firstElemLabel)
+                val previousServerInfo = broadcastLastLabelInfoFromServer
+                    .value
+                    .filter(r => r._1 < index && r._2 == firstElemLabel)
                 
                 val firstElemCountFromPreviousServer = previousServerInfo.length match { 
                     case 0 => 0
