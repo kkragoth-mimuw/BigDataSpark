@@ -1,9 +1,9 @@
 ﻿{
   "paragraphs": [
     {
-      "text": "// https://colab.research.google.com/drive/1MrDH4fupZCRpX0qeb9m5Rbo5KGz4Gy3A?usp=sharing\nimport scala.util.Random\nimport scala.math.min\n\nval POINT_TYPE = 0\nval QUERY_TYPE = 1\n\nval SERVER_COUNT = 3\n\nval example_points = Random.shuffle(List(\n    ((94, 6, 1), QUERY_TYPE),\n    ((43, 14, 97), QUERY_TYPE),\n    ((17, 51, 69), POINT_TYPE),\n    ((36, 3, 79), POINT_TYPE),\n    ((53, 51, 95), POINT_TYPE),\n    ((63, 95, 48), QUERY_TYPE),\n    ((39, 55, 61), QUERY_TYPE),\n    ((9, 22, 6), QUERY_TYPE),\n    ((7, 72, 30), QUERY_TYPE),\n    ((13, 47, 34), POINT_TYPE),\n    ((5, 7, 60 ), QUERY_TYPE),\n    ((69, 37, 85), POINT_TYPE),\n    ((64, 15, 93), QUERY_TYPE),\n    ((100, 58, 10), POINT_TYPE),\n    ((52, 87, 47), POINT_TYPE),\n    ((70, 19, 31), QUERY_TYPE)\n))\n\n// Correct Output\n// (94, 6, 1) 0\n// (43, 14, 97) 1\n// (63, 95, 48) 2\n// (39, 55, 61) 1\n// (9, 22, 6) 0\n// (7, 72, 30) 0\n// (5, 7, 60) 0\n// (64, 15, 93) 1\n// (70, 19, 31) 0\n\nval rdd = spark.sparkContext.parallelize(example_points, SERVER_COUNT).cache\n\nval rddCount = spark.sparkContext.broadcast(rdd.count())\n\nval sorted2d =  rdd.sortBy { case ((dim1, dim2, dim3), pointType) =>\n        (dim1, pointType)\n    }\n    .zipWithIndex\n    .map { case (((dim1, dim2, dim3), pointType), i) => {\n        val padWithZerosLength = (rddCount.value - 1).toBinaryString.length - i.toBinaryString.length\n        val generatedLabel = \"0\" * (padWithZerosLength) + i.toBinaryString\n        \n        (generatedLabel, (dim1, dim2, dim3), pointType)\n    }}\n    .flatMap { case (label, (dim1, dim2, dim3), pointType) => {\n        val desiredPrefixEnding = pointType match {\n            case POINT_TYPE => '0'\n            case QUERY_TYPE => '1'\n        }\n        \n        val indxs = label.zipWithIndex.filter(_._1 == desiredPrefixEnding).map(_._2)\n        var createdPrefixes = indxs.map(i => (label.take(i), ((dim1, dim2, dim3), pointType)))\n        \n        if (pointType == QUERY_TYPE && label == (\"0\" * (rddCount.value - 1).toBinaryString.length)) {\n            createdPrefixes = createdPrefixes :+ ((\"0\" * (rddCount.value - 1).toBinaryString.length), ((dim1, dim2, dim3), pointType))\n        }\n        \n        createdPrefixes\n    }}\n    .sortBy { case (label, ((dim1, dim2, dim3), pointType)) =>\n        (label.length, label, dim2, pointType)\n    }\n    .cache\n    \nval sorted2dLabelCountsMap = sorted2d\n    .countByKey\n\nval broadcastSorted2dLabelCountsMap = spark.sparkContext.broadcast(sorted2dLabelCountsMap)\n\nval sorted2dMinIndexMap = sorted2d\n    .zipWithIndex\n    .map { case ((label, ((dim1, dim2, dim3), pointType)), i) => \n        (label, i)\n    }\n    .reduceByKey { case (x, y) => min(x,y) }\n    .collect()\n    .toMap\n    \nval broadcastSorted2dMinIndexMap = spark.sparkContext.broadcast(sorted2dMinIndexMap)\n\nval sorted1d = sorted2d\n    .zipWithIndex\n    .map { case ((label, ((dim1, dim2, dim3), pointType)), i) =>\n        val n = broadcastSorted2dLabelCountsMap.value(label)\n        val indexOfLabel = i - broadcastSorted2dMinIndexMap.value(label)\n        \n        val padWithZerosLength = (n - 1).toBinaryString.length - indexOfLabel.toBinaryString.length\n        val generatedLabel = \"0\" * (padWithZerosLength) + indexOfLabel.toBinaryString\n        \n        ((label, generatedLabel), ((dim1, dim2, dim3), pointType))\n    }\n    .flatMap { case ((label1, label2), ((dim1,dim2,dim3), pointType)) => {\n         val desiredPrefixEnding = pointType match {\n            case POINT_TYPE => '0'\n            case QUERY_TYPE => '1'\n        }\n        \n        val indxs = label2.zipWithIndex.filter(_._1 == desiredPrefixEnding).map(_._2)\n        var createdPrefixes = indxs.map(i => ((label1, label2.take(i)), ((dim1, dim2, dim3), pointType)))\n        \n        val zeroLabel = \"0\" * (broadcastSorted2dLabelCountsMap.value(label1) - 1).toBinaryString.length\n        if (pointType == QUERY_TYPE && label2 == zeroLabel) {\n            createdPrefixes = createdPrefixes :+ ((label1, zeroLabel), ((dim1, dim2, dim3), pointType))\n        }\n        createdPrefixes\n    }}\n    .sortBy { case ((firstLabel, secondLabel), ((dim1, dim2, dim3), pointType)) => \n        (firstLabel.length, firstLabel, secondLabel.length, secondLabel, dim3, pointType)\n    }\n    .cache()\n\n// for (elem <- sorted1dCounts.collect) {\n    // print(elem)\n// }\n        \nval lastValues = sorted1d\n    .mapPartitionsWithIndex((index, it) => {\n        val (iter, iterDup) = it.duplicate\n        \n        var lastPrefix = iterDup.toList.last._1\n        var lastCount = iter.filter(p => p._1 == lastPrefix && p._2._2 == POINT_TYPE).length\n        \n        Iterator((index, lastPrefix, lastCount))\n    \n    }).collect()\n    \n\nval broadcastLastValues = spark.sparkContext.broadcast(lastValues)\n\nval queryCounts = sorted1d\n    .mapPartitionsWithIndex((index, it) => {\n        var queryOutputs = Array[((Int, Int, Int), Int)]()\n        \n        val firstElem = it.next()\n        val firstElemLabel = firstElem._1\n        \n        val previousServerInfo = broadcastLastValues.value.filter(r => r._1 < index && r._2 == firstElemLabel)\n        \n        val firstElemCountFromPreviousServer = previousServerInfo.length match { \n            case 0 => 0\n            case _ => previousServerInfo.map(_._3).reduceLeft[Int](_+_)\n        }\n        \n        var currentLabel = firstElemLabel\n        \n        var currentCount = firstElem._2._2 match {\n            case POINT_TYPE => firstElemCountFromPreviousServer + 1\n            case QUERY_TYPE => firstElemCountFromPreviousServer\n        }\n        \n        if (firstElem._2._2 == QUERY_TYPE) {\n            queryOutputs = queryOutputs :+ (firstElem._2._1, firstElemCountFromPreviousServer)\n        }\n        \n        \n        for ((label, (dims, pointType)) <- it) {\n            if (label != currentLabel) {\n                currentLabel = label\n                currentCount = 0\n            }\n            pointType match {\n                case POINT_TYPE => currentCount += 1\n                case QUERY_TYPE => {\n                    queryOutputs = queryOutputs :+ (dims, currentCount)\n                }\n            }\n        }\n        \n        queryOutputs.toIterator\n    })\n    .reduceByKey(_+_)\n    .collect()\n    \nfor (elem <- queryCounts)\n    print(elem)\n\n",
+      "text": "// https://colab.research.google.com/drive/1MrDH4fupZCRpX0qeb9m5Rbo5KGz4Gy3A?usp=sharing\nimport scala.util.Random\nimport scala.math.min\n\nval POINT_TYPE = 0\nval QUERY_TYPE = 1\n\nval SERVER_COUNT = 3\n\nval example_points = Random.shuffle(List(\n    ((94, 6, 1), QUERY_TYPE),\n    ((43, 14, 97), QUERY_TYPE),\n    ((17, 51, 69), POINT_TYPE),\n    ((36, 3, 79), POINT_TYPE),\n    ((53, 51, 95), POINT_TYPE),\n    ((63, 95, 48), QUERY_TYPE),\n    ((39, 55, 61), QUERY_TYPE),\n    ((9, 22, 6), QUERY_TYPE),\n    ((7, 72, 30), QUERY_TYPE),\n    ((13, 47, 34), POINT_TYPE),\n    ((5, 7, 60 ), QUERY_TYPE),\n    ((69, 37, 85), POINT_TYPE),\n    ((64, 15, 93), QUERY_TYPE),\n    ((100, 58, 10), POINT_TYPE),\n    ((52, 87, 47), POINT_TYPE),\n    ((70, 19, 31), QUERY_TYPE)\n))\n\n// Correct Output\n// (94, 6, 1) 0\n// (43, 14, 97) 1\n// (63, 95, 48) 2\n// (39, 55, 61) 1\n// (9, 22, 6) 0\n// (7, 72, 30) 0\n// (5, 7, 60) 0\n// (64, 15, 93) 1\n// (70, 19, 31) 0\n\nval rdd = spark.sparkContext.parallelize(example_points, SERVER_COUNT).cache\n\nval rddCount = spark.sparkContext.broadcast(rdd.count())\n\nval sorted2d =  rdd.sortBy { case ((dim1, dim2, dim3), pointType) =>\n        (dim1, pointType)\n    }\n    .zipWithIndex\n    .map { case (((dim1, dim2, dim3), pointType), i) => {\n        val padWithZerosLength = (rddCount.value - 1).toBinaryString.length - i.toBinaryString.length\n        val generatedLabel = \"0\" * (padWithZerosLength) + i.toBinaryString\n        \n        (generatedLabel, (dim1, dim2, dim3), pointType)\n    }}\n    .flatMap { case (label, (dim1, dim2, dim3), pointType) => {\n        val desiredPrefixEnding = pointType match {\n            case POINT_TYPE => '0'\n            case QUERY_TYPE => '1'\n        }\n        \n        val indxs = label.zipWithIndex.filter(_._1 == desiredPrefixEnding).map(_._2)\n        var createdPrefixes = indxs.map(i => (label.take(i), ((dim1, dim2, dim3), pointType)))\n        \n        val zeroLabel = \"0\" * (rddCount.value - 1).toBinaryString.length\n        if (pointType == QUERY_TYPE && label == zeroLabel) {\n            createdPrefixes = createdPrefixes :+ (zeroLabel, ((dim1, dim2, dim3), pointType))\n        }\n        \n        createdPrefixes\n    }}\n    .sortBy { case (label, ((dim1, dim2, dim3), pointType)) =>\n        (label.length, label, dim2, pointType)\n    }\n    .cache\n    \nval sorted2dLabelCountsMap = sorted2d\n    .countByKey\n\nval broadcastSorted2dLabelCountsMap = spark.sparkContext.broadcast(sorted2dLabelCountsMap)\n\nval sorted2dMinIndexMap = sorted2d\n    .zipWithIndex\n    .map { case ((label, ((dim1, dim2, dim3), pointType)), i) => \n        (label, i)\n    }\n    .reduceByKey { case (x, y) => min(x,y) }\n    .collect()\n    .toMap\n    \nval broadcastSorted2dMinIndexMap = spark.sparkContext.broadcast(sorted2dMinIndexMap)\n\nval sorted1d = sorted2d\n    .zipWithIndex\n    .map { case ((label, ((dim1, dim2, dim3), pointType)), i) =>\n        val n = broadcastSorted2dLabelCountsMap.value(label)\n        val indexOfLabel = i - broadcastSorted2dMinIndexMap.value(label)\n        \n        val padWithZerosLength = (n - 1).toBinaryString.length - indexOfLabel.toBinaryString.length\n        val generatedLabel = \"0\" * (padWithZerosLength) + indexOfLabel.toBinaryString\n        \n        ((label, generatedLabel), ((dim1, dim2, dim3), pointType))\n    }\n    .flatMap { case ((label1, label2), ((dim1,dim2,dim3), pointType)) => {\n         val desiredPrefixEnding = pointType match {\n            case POINT_TYPE => '0'\n            case QUERY_TYPE => '1'\n        }\n        \n        val indxs = label2.zipWithIndex.filter(_._1 == desiredPrefixEnding).map(_._2)\n        var createdPrefixes = indxs.map(i => ((label1, label2.take(i)), ((dim1, dim2, dim3), pointType)))\n        \n        val zeroLabel = \"0\" * (broadcastSorted2dLabelCountsMap.value(label1) - 1).toBinaryString.length\n        if (pointType == QUERY_TYPE && label2 == zeroLabel) {\n            createdPrefixes = createdPrefixes :+ ((label1, zeroLabel), ((dim1, dim2, dim3), pointType))\n        }\n        createdPrefixes\n    }}\n    .sortBy { case ((firstLabel, secondLabel), ((dim1, dim2, dim3), pointType)) => \n        (firstLabel.length, firstLabel, secondLabel.length, secondLabel, dim3, pointType)\n    }\n    .cache()\n\n// for (elem <- sorted1dCounts.collect) {\n    // print(elem)\n// }\n        \nval lastLabelInfoFromServer = sorted1d\n    .mapPartitionsWithIndex((index, it) => {\n        val (iter, iterDup) = it.duplicate\n        \n        var currentLabel = (\"not_defined\", \"not_defined\")\n        var currentLabelCount = 0\n        \n        for ((label, (dims, pointType)) <- iterDup) {\n            if (label != currentLabel) {\n                currentLabel = label\n                currentLabelCount = 0\n            }\n            \n            if (pointType == POINT_TYPE) {\n                currentLabelCount += 1\n            }\n        }\n        \n        Iterator((index, currentLabel, currentLabelCount))\n    \n    }).collect()\n    \n\nval broadcastLastLabelInfoFromServer = spark.sparkContext.broadcast(lastLabelInfoFromServer)\n\nval queryCounts = sorted1d\n    .mapPartitionsWithIndex((index, it) => {\n        var queryOutputs = Array[((Int, Int, Int), Int)]()\n        \n        val firstElem = it.next()\n        val firstElemLabel = firstElem._1\n        \n        val previousServerInfo = broadcastLastLabelInfoFromServer.value.filter(r => r._1 < index && r._2 == firstElemLabel)\n        \n        val firstElemCountFromPreviousServer = previousServerInfo.length match { \n            case 0 => 0\n            case _ => previousServerInfo.map(_._3).reduceLeft[Int](_+_)\n        }\n        \n        var currentLabel = firstElemLabel\n        \n        var currentCount = firstElem._2._2 match {\n            case POINT_TYPE => firstElemCountFromPreviousServer + 1\n            case QUERY_TYPE => firstElemCountFromPreviousServer\n        }\n        \n        if (firstElem._2._2 == QUERY_TYPE) {\n            queryOutputs = queryOutputs :+ (firstElem._2._1, firstElemCountFromPreviousServer)\n        }\n        \n        \n        for ((label, (dims, pointType)) <- it) {\n            if (label != currentLabel) {\n                currentLabel = label\n                currentCount = 0\n            }\n            pointType match {\n                case POINT_TYPE => currentCount += 1\n                case QUERY_TYPE => {\n                    queryOutputs = queryOutputs :+ (dims, currentCount)\n                }\n            }\n        }\n        \n        queryOutputs.toIterator\n    })\n    .reduceByKey(_+_)\n    .collect()\n    \nfor (elem <- queryCounts)\n    println(elem)",
       "user": "anonymous",
-      "dateUpdated": "2020-06-14T13:25:13+0200",
+      "dateUpdated": "2020-06-15T16:10:25+0200",
       "config": {
         "colWidth": 12,
         "fontSize": 9,
@@ -27,7 +27,7 @@
         "msg": [
           {
             "type": "TEXT",
-            "data": "((70,19,31),0)((7,72,30),0)((94,6,1),0)((39,55,61),1)((9,22,6),0)((64,15,93),1)((43,14,97),1)((5,7,60),0)((63,95,48),2)import scala.util.Random\nimport scala.math.min\n\u001b[1m\u001b[34mPOINT_TYPE\u001b[0m: \u001b[1m\u001b[32mInt\u001b[0m = 0\n\u001b[1m\u001b[34mQUERY_TYPE\u001b[0m: \u001b[1m\u001b[32mInt\u001b[0m = 1\n\u001b[1m\u001b[34mSERVER_COUNT\u001b[0m: \u001b[1m\u001b[32mInt\u001b[0m = 3\n\u001b[1m\u001b[34mexample_points\u001b[0m: \u001b[1m\u001b[32mList[((Int, Int, Int), Int)]\u001b[0m = List(((70,19,31),1), ((13,47,34),0), ((52,87,47),0), ((36,3,79),0), ((9,22,6),1), ((43,14,97),1), ((17,51,69),0), ((53,51,95),0), ((7,72,30),1), ((39,55,61),1), ((64,15,93),1), ((63,95,48),1), ((94,6,1),1), ((5,7,60),1), ((69,37,85),0), ((100,58,10),0))\n\u001b[1m\u001b[34mrdd\u001b[0m: \u001b[1m\u001b[32morg.apache.spark.rdd.RDD[((Int, Int, Int), Int)]\u001b[0m = ParallelCollectionRDD[1836] at parallelize at <console>:143\n\u001b[1m\u001b[34mrddCount\u001b[0m: \u001b[1m\u001b[32morg.apache.spark.broadcast.Broadcast[Long]\u001b[0m = Broadcast(1110)\n\u001b[1m\u001b[34msorted2d\u001b[0m: \u001b[1m\u001b[32morg.apache.s..."
+            "data": "((70,19,31),0)\n((7,72,30),0)\n((94,6,1),0)\n((39,55,61),1)\n((9,22,6),0)\n((64,15,93),1)\n((43,14,97),1)\n((5,7,60),0)\n((63,95,48),2)\nimport scala.util.Random\nimport scala.math.min\n\u001b[1m\u001b[34mPOINT_TYPE\u001b[0m: \u001b[1m\u001b[32mInt\u001b[0m = 0\n\u001b[1m\u001b[34mQUERY_TYPE\u001b[0m: \u001b[1m\u001b[32mInt\u001b[0m = 1\n\u001b[1m\u001b[34mSERVER_COUNT\u001b[0m: \u001b[1m\u001b[32mInt\u001b[0m = 3\n\u001b[1m\u001b[34mexample_points\u001b[0m: \u001b[1m\u001b[32mList[((Int, Int, Int), Int)]\u001b[0m = List(((63,95,48),1), ((43,14,97),1), ((64,15,93),1), ((53,51,95),0), ((17,51,69),0), ((94,6,1),1), ((100,58,10),0), ((39,55,61),1), ((13,47,34),0), ((5,7,60),1), ((9,22,6),1), ((70,19,31),1), ((7,72,30),1), ((36,3,79),0), ((69,37,85),0), ((52,87,47),0))\n\u001b[1m\u001b[34mrdd\u001b[0m: \u001b[1m\u001b[32morg.apache.spark.rdd.RDD[((Int, Int, Int), Int)]\u001b[0m = ParallelCollectionRDD[2826] at parallelize at <console>:282\n\u001b[1m\u001b[34mrddCount\u001b[0m: \u001b[1m\u001b[32morg.apache.spark.broadcast.Broadcast[Long]\u001b[0m = Broadcast(1796)\n\u001b[1m\u001b[34msorted2d\u001b[0m: \u001b[1m\u001b[32morg.apache.s..."
           }
         ]
       },
@@ -40,48 +40,48 @@
           "group": "spark",
           "values": [
             {
-              "jobUrl": "http://pc23.home:4040/jobs/job?id=684",
-              "$$hashKey": "object:3721"
+              "jobUrl": "http://pc23.home:4040/jobs/job?id=1043",
+              "$$hashKey": "object:2823"
             },
             {
-              "jobUrl": "http://pc23.home:4040/jobs/job?id=685",
-              "$$hashKey": "object:3722"
+              "jobUrl": "http://pc23.home:4040/jobs/job?id=1044",
+              "$$hashKey": "object:2824"
             },
             {
-              "jobUrl": "http://pc23.home:4040/jobs/job?id=686",
-              "$$hashKey": "object:3723"
+              "jobUrl": "http://pc23.home:4040/jobs/job?id=1045",
+              "$$hashKey": "object:2825"
             },
             {
-              "jobUrl": "http://pc23.home:4040/jobs/job?id=687",
-              "$$hashKey": "object:3724"
+              "jobUrl": "http://pc23.home:4040/jobs/job?id=1046",
+              "$$hashKey": "object:2826"
             },
             {
-              "jobUrl": "http://pc23.home:4040/jobs/job?id=688",
-              "$$hashKey": "object:3725"
+              "jobUrl": "http://pc23.home:4040/jobs/job?id=1047",
+              "$$hashKey": "object:2827"
             },
             {
-              "jobUrl": "http://pc23.home:4040/jobs/job?id=689",
-              "$$hashKey": "object:3726"
+              "jobUrl": "http://pc23.home:4040/jobs/job?id=1048",
+              "$$hashKey": "object:2828"
             },
             {
-              "jobUrl": "http://pc23.home:4040/jobs/job?id=690",
-              "$$hashKey": "object:3727"
+              "jobUrl": "http://pc23.home:4040/jobs/job?id=1049",
+              "$$hashKey": "object:2829"
             },
             {
-              "jobUrl": "http://pc23.home:4040/jobs/job?id=691",
-              "$$hashKey": "object:3728"
+              "jobUrl": "http://pc23.home:4040/jobs/job?id=1050",
+              "$$hashKey": "object:2830"
             },
             {
-              "jobUrl": "http://pc23.home:4040/jobs/job?id=692",
-              "$$hashKey": "object:3729"
+              "jobUrl": "http://pc23.home:4040/jobs/job?id=1051",
+              "$$hashKey": "object:2831"
             },
             {
-              "jobUrl": "http://pc23.home:4040/jobs/job?id=693",
-              "$$hashKey": "object:3730"
+              "jobUrl": "http://pc23.home:4040/jobs/job?id=1052",
+              "$$hashKey": "object:2832"
             },
             {
-              "jobUrl": "http://pc23.home:4040/jobs/job?id=694",
-              "$$hashKey": "object:3731"
+              "jobUrl": "http://pc23.home:4040/jobs/job?id=1053",
+              "$$hashKey": "object:2833"
             }
           ],
           "interpreterSettingId": "spark"
@@ -91,16 +91,16 @@
       "jobName": "paragraph_1591888520217_1132697128",
       "id": "paragraph_1591888520217_1132697128",
       "dateCreated": "2020-06-11T17:15:20+0200",
-      "dateStarted": "2020-06-14T13:25:13+0200",
-      "dateFinished": "2020-06-14T13:25:14+0200",
+      "dateStarted": "2020-06-15T16:10:25+0200",
+      "dateFinished": "2020-06-15T16:10:27+0200",
       "status": "FINISHED",
       "focus": true,
-      "$$hashKey": "object:3647"
+      "$$hashKey": "object:1525"
     },
     {
       "text": "",
       "user": "anonymous",
-      "dateUpdated": "2020-06-12T11:37:43+0200",
+      "dateUpdated": "2020-06-15T15:17:38+0200",
       "config": {
         "colWidth": 12,
         "fontSize": 9,
@@ -124,8 +124,8 @@
       "jobName": "paragraph_1591898698416_588833935",
       "id": "paragraph_1591898698416_588833935",
       "dateCreated": "2020-06-11T20:04:58+0200",
-      "status": "READY",
-      "$$hashKey": "object:3648"
+      "status": "FINISHED",
+      "$$hashKey": "object:1526"
     }
   ],
   "name": "pdd_3d",
@@ -140,6 +140,8 @@
     "looknfeel": "default",
     "personalizedMode": "false"
   },
-  "info": {},
+  "info": {
+    "isRunning": false
+  },
   "path": "/pdd_3d"
 }
