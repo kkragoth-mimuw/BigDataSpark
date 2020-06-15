@@ -50,12 +50,10 @@ object Pdd {
 
         val lastLabelInfoFromServer = sorted1d
             .mapPartitionsWithIndex((index, it) => {
-                val (iter, iterDup) = it.duplicate
-                
                 var currentLabel = "not_defined"
                 var currentLabelCount = 0
                 
-                for ((label, (dims, pointType)) <- iterDup) {
+                for ((label, (dims, pointType)) <- it) {
                     if (label != currentLabel) {
                         currentLabel = label
                         currentLabelCount = 0
@@ -209,12 +207,10 @@ object Pdd {
 
         val lastLabelInfoFromServer = sorted1d
             .mapPartitionsWithIndex((index, it) => {
-                val (iter, iterDup) = it.duplicate
-                
                 var currentLabel = ("not_defined", "not_defined")
                 var currentLabelCount = 0
                 
-                for ((label, (dims, pointType)) <- iterDup) {
+                for ((label, (dims, pointType)) <- it) {
                     if (label != currentLabel) {
                         currentLabel = label
                         currentLabelCount = 0
