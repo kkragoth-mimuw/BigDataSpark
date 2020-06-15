@@ -42,7 +42,9 @@ object Pdd {
                 
                 createdPrefixes
             }}
-            .sortBy(r => (r._1.length, r._1, r._2._1._2, r._2._2))
+            .sortBy { case (label, ((dim1, dim2), pointType)) => 
+                (label.length, label, dim2, pointType)
+            }
             .cache()
 
         val lastValues = sorted1d
@@ -55,7 +57,6 @@ object Pdd {
                 Iterator((index, lastPrefix, lastCount))
             
             }).collect()
-            
 
         val broadcastLastValues = sc.broadcast(lastValues)
 
